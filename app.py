@@ -1,67 +1,99 @@
 import os
 import time
 import requests
+from telegram import Bot
 
-# ===== CONFIG =====
+# =========================
+# CONFIG
+# =========================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # coloque seu chat_id no Render
-SYMBOL = "TON-USDT"
-DROP_PERCENT = 3.0        # alerta quando cair 3% do topo
-CHECK_INTERVAL = 30      # segundos entre verificações
 
 if not TELEGRAM_TOKEN:
     raise Exception("TELEGRAM_TOKEN não definido")
-if not TELEGRAM_CHAT_ID:
-    raise Exception("TELEGRAM_CHAT_ID não definido")
 
-BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+bot = Bot(token=TELEGRAM_TOKEN)
 
-# ===== BINGX (preço público) =====
+# Chat ID autorizado (primeira pessoa que falar com o bot)
+AUTHORIZED_CHAT_ID = None
+
+SYMBOL = "TON-USDT"
+DROP_PERCENT = 3.0   # alerta a cada 3%
+CHECK_INTERVAL = 60  # segundos
+
+current_top = None
+
+# =========================
+# BingX price
+# =========================
 def get_price():
     url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
-    r = requests.get(url, params={"symbol": SYMBOL}, timeout=10).json()
+    params = {"symbol": SYMBOL}
+    r = requests.get(url, params=params, timeout=10).json()
     return float(r["data"]["price"])
 
-# ===== TELEGRAM =====
+# =========================
+# Telegram
+# =========================
 def send(msg):
-    requests.post(f"{BASE_URL}/sendMessage", json={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": msg
-    }, timeout=10)
+    if AUTHORIZED_CHAT_ID:
+        bot.send_message(chat_id=AUTHORIZED_CHAT_ID, text=msg)
 
-# ===== ESTADO DO MONITOR =====
-top_price = 0.0          # topo móvel (só sobe)
-last_alert_level = 0    # quantos blocos de 3% já alertamos a partir do topo
+# =========================
+# Wait for first user
+# =========================
+def wait_for_user():
+    global AUTHORIZED_CHAT_ID
+    last_update = None
 
-send("🟢 Monitor TON ativo. Vou avisar quando cair 3% abaixo do topo móvel.")
+    print("Aguardando alguém falar com o bot no Telegram...")
 
-# ===== LOOP =====
+    while AUTHORIZED_CHAT_ID is None:
+        updates = bot.get_updates(offset=last_update, timeout=10)
+
+        for u in updates:
+            last_update = u.update_id + 1
+            if u.message:
+                AUTHORIZED_CHAT_ID = u.message.chat.id
+                bot.send_message(chat_id=AUTHORIZED_CHAT_ID, text="✅ Bot conectado. Monitorando TONUSDT agora.")
+                return
+
+        time.sleep(2)
+
+# =========================
+# MAIN
+# =========================
+wait_for_user()
+
 while True:
     try:
         price = get_price()
 
-        # Atualiza o topo móvel (só quando faz novo máximo)
-        if price > top_price:
-            top_price = price
-            last_alert_level = 0  # reset dos níveis quando faz novo topo
+        global current_top
 
-        # Calcula a queda a partir do topo
-        if top_price > 0:
-            drop = (top_price - price) / top_price * 100
+        # Define topo inicial
+        if current_top is None:
+            current_top = price
+            send(f"📈 Topo inicial da TON: {price:.4f}")
+            time.sleep(CHECK_INTERVAL)
+            continue
 
-            # Nível de alerta (cada 3% é um nível: 1=3%, 2=6%, 3=9%...)
-            level = int(drop // DROP_PERCENT)
+        # Novo topo
+        if price > current_top:
+            current_top = price
+            send(f"🔼 Novo topo da TON: {price:.4f}")
 
-            # Se cruzou um novo nível de queda, avisa
-            if level > last_alert_level:
-                msg = (
-                    f"🔴 TON EM QUEDA\n"
-                    f"Topo: {top_price}\n"
-                    f"Preço atual: {price}\n"
-                    f"Queda acumulada: {drop:.2f}%"
-                )
-                send(msg)
-                last_alert_level = level
+        # Percentual de queda
+        drop = (current_top - price) / current_top * 100
+
+        if drop >= DROP_PERCENT:
+            send(
+                f"🚨 TON CAIU {drop:.2f}%\n"
+                f"Topo: {current_top:.4f}\n"
+                f"Preço atual: {price:.4f}"
+            )
+
+            # Reseta topo para permitir novas quedas de 3%
+            current_top = price
 
         time.sleep(CHECK_INTERVAL)
 
