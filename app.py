@@ -1,68 +1,60 @@
 import os
-import time
+import asyncio
 import requests
-from telegram import Bot
-from telegram.ext import Application, CommandHandler
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-# ===== CONFIG =====
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 SYMBOL = "TONUSDT"
-ALERT_DROP = 3.0  # %
-CHECK_INTERVAL = 60  # segundos
+ALERT_DROP = 3.0
+CHECK_INTERVAL = 60
 
 if not TOKEN:
     raise Exception("TELEGRAM_TOKEN não definido")
 
-bot = Bot(token=TOKEN)
-
-# ===== ESTADO GLOBAL =====
 top_price = None
 last_price = None
-last_alerted_level = None
+last_alert_level = 0
+CHAT_ID = None
 
-# ===== FUNÇÃO PREÇO =====
+# ===== PREÇO =====
 def get_price():
     url = "https://api.binance.com/api/v3/ticker/price"
     r = requests.get(url, params={"symbol": SYMBOL}, timeout=10)
-    data = r.json()
-    return float(data["price"])
+    return float(r.json()["price"])
 
 # ===== COMANDOS =====
-async def start(update, context):
-    await update.message.reply_text("🤖 Bot online. Monitorando TONUSDT.")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CHAT_ID
+    CHAT_ID = update.effective_chat.id
+    await update.message.reply_text("🤖 Bot conectado. Monitorando TONUSDT.")
 
-async def price(update, context):
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = get_price()
-    await update.message.reply_text(f"💰 TONUSDT agora: {price}")
+    await update.message.reply_text(f"💰 TONUSDT: {price}")
 
-async def status(update, context):
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global top_price, last_price
-    if top_price is None:
-        await update.message.reply_text("Ainda não tenho dados.")
+
+    if not top_price:
+        await update.message.reply_text("Ainda coletando dados…")
         return
 
     drop = (top_price - last_price) / top_price * 100
 
-    msg = (
-        f"📊 STATUS TONUSDT\n"
-        f"Topo: {top_price}\n"
-        f"Preço: {last_price}\n"
-        f"Queda: {drop:.2f}%"
+    await update.message.reply_text(
+        f"📊 TONUSDT\nTopo: {top_price}\nPreço: {last_price}\nQueda: {drop:.2f}%"
     )
-    await update.message.reply_text(msg)
 
-async def check(update, context):
-    await status(update, context)
-
-async def reset(update, context):
-    global top_price, last_alerted_level
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global top_price, last_alert_level
     top_price = None
-    last_alerted_level = None
-    await update.message.reply_text("🔄 Topo resetado. Novo ciclo iniciado.")
+    last_alert_level = 0
+    await update.message.reply_text("🔄 Topo resetado.")
 
-# ===== LOOP DE MONITORAMENTO =====
+# ===== LOOP =====
 async def monitor(app):
-    global top_price, last_price, last_alerted_level
+    global top_price, last_price, last_alert_level
 
     while True:
         try:
@@ -71,41 +63,34 @@ async def monitor(app):
 
             if top_price is None or price > top_price:
                 top_price = price
-                last_alerted_level = None
+                last_alert_level = 0
 
             drop = (top_price - price) / top_price * 100
+            level = int(drop // ALERT_DROP)
 
-            if drop >= ALERT_DROP:
-                level = int(drop // ALERT_DROP)
-
-                if last_alerted_level != level:
-                    last_alerted_level = level
-                    await app.bot.send_message(
-                        chat_id=CHAT_ID,
-                        text=f"🚨 TONUSDT caiu {drop:.2f}% desde o topo!\nTopo: {top_price}\nPreço atual: {price}"
-                    )
+            if level > last_alert_level and CHAT_ID:
+                last_alert_level = level
+                await app.bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=f"🚨 TONUSDT caiu {drop:.2f}% desde o topo!\nTopo: {top_price}\nPreço: {price}"
+                )
 
         except Exception as e:
             print("Erro:", e)
 
-        await app.bot.sleep(CHECK_INTERVAL)
+        await asyncio.sleep(CHECK_INTERVAL)
 
 # ===== START =====
-def main():
-    global CHAT_ID
-
+async def main():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("price", price))
     app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("check", check))
     app.add_handler(CommandHandler("reset", reset))
 
-    print("Bot iniciado")
-    app.run_polling()
-
-    CHAT_ID = None
+    app.create_task(monitor(app))
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
