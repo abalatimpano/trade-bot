@@ -1,101 +1,89 @@
 import os
 import time
 import requests
-from telegram import Bot
 
-# =========================
-# CONFIG
-# =========================
+# ====== CONFIG ======
+SYMBOL = "TONUSDT"
+INTERVAL = 60  # segundos entre cada verificação
+DROP_PERCENT = 3.0  # alerta quando cair 3% do topo
+BINANCE_URL = "https://api.binance.com/api/v3/ticker/price"
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-
 if not TELEGRAM_TOKEN:
     raise Exception("TELEGRAM_TOKEN não definido")
 
-bot = Bot(token=TELEGRAM_TOKEN)
+# Coloque seu chat_id aqui depois do primeiro /start
+CHAT_ID = None
 
-# Chat ID autorizado (primeira pessoa que falar com o bot)
-AUTHORIZED_CHAT_ID = None
+# ===================
 
-SYMBOL = "TON-USDT"
-DROP_PERCENT = 3.0   # alerta a cada 3%
-CHECK_INTERVAL = 60  # segundos
+def send_telegram(msg):
+    global CHAT_ID
+    if not CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
-current_top = None
-
-# =========================
-# BingX price
-# =========================
 def get_price():
-    url = "https://open-api.bingx.com/openApi/swap/v2/quote/price"
-    params = {"symbol": SYMBOL}
-    r = requests.get(url, params=params, timeout=10).json()
-    return float(r["data"]["price"])
+    r = requests.get(BINANCE_URL, params={"symbol": SYMBOL})
+    return float(r.json()["price"])
 
-# =========================
-# Telegram
-# =========================
-def send(msg):
-    if AUTHORIZED_CHAT_ID:
-        bot.send_message(chat_id=AUTHORIZED_CHAT_ID, text=msg)
+def get_updates(offset=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    params = {"timeout": 100}
+    if offset:
+        params["offset"] = offset
+    return requests.get(url, params=params).json()
 
-# =========================
-# Wait for first user
-# =========================
-def wait_for_user():
-    global AUTHORIZED_CHAT_ID
-    last_update = None
+print("🚀 Robô TON iniciado")
 
-    print("Aguardando alguém falar com o bot no Telegram...")
-
-    while AUTHORIZED_CHAT_ID is None:
-        updates = bot.get_updates(offset=last_update, timeout=10)
-
-        for u in updates:
-            last_update = u.update_id + 1
-            if u.message:
-                AUTHORIZED_CHAT_ID = u.message.chat.id
-                bot.send_message(chat_id=AUTHORIZED_CHAT_ID, text="✅ Bot conectado. Monitorando TONUSDT agora.")
-                return
-
-        time.sleep(2)
-
-# =========================
-# MAIN
-# =========================
-wait_for_user()
+top_price = 0.0
+last_alert_top = 0.0
+update_id = None
 
 while True:
     try:
+        # ================= Telegram =================
+        data = get_updates(update_id)
+
+        for result in data.get("result", []):
+            update_id = result["update_id"] + 1
+            msg = result.get("message", {})
+            text = msg.get("text", "")
+            chat = msg.get("chat", {})
+
+            if CHAT_ID is None:
+                CHAT_ID = chat["id"]
+                send_telegram("🤖 Bot conectado. Monitorando TONUSDT.")
+
+            if text == "/price":
+                price = get_price()
+                send_telegram(f"📊 TONUSDT: {price}")
+
+            if text == "/top":
+                send_telegram(f"🏔️ Topo atual: {top_price}")
+
+        # ================= Preço =================
         price = get_price()
 
-        global current_top
+        # Atualiza topo
+        if price > top_price:
+            top_price = price
+            last_alert_top = top_price
+            send_telegram(f"📈 Novo topo do dia: {top_price}")
 
-        # Define topo inicial
-        if current_top is None:
-            current_top = price
-            send(f"📈 Topo inicial da TON: {price:.4f}")
-            time.sleep(CHECK_INTERVAL)
-            continue
+        # Calcula queda
+        if top_price > 0:
+            drop = (top_price - price) / top_price * 100
 
-        # Novo topo
-        if price > current_top:
-            current_top = price
-            send(f"🔼 Novo topo da TON: {price:.4f}")
+            if drop >= DROP_PERCENT:
+                if last_alert_top == top_price:
+                    send_telegram(
+                        f"🔻 TON caiu {drop:.2f}% do topo\nTopo: {top_price}\nPreço atual: {price}"
+                    )
+                    last_alert_top = 0  # impede spam até novo topo
 
-        # Percentual de queda
-        drop = (current_top - price) / current_top * 100
-
-        if drop >= DROP_PERCENT:
-            send(
-                f"🚨 TON CAIU {drop:.2f}%\n"
-                f"Topo: {current_top:.4f}\n"
-                f"Preço atual: {price:.4f}"
-            )
-
-            # Reseta topo para permitir novas quedas de 3%
-            current_top = price
-
-        time.sleep(CHECK_INTERVAL)
+        time.sleep(INTERVAL)
 
     except Exception as e:
         print("Erro:", e)
