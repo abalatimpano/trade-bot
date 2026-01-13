@@ -1,80 +1,33 @@
 import os
-import asyncio
 import requests
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Updater, CommandHandler
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
-SYMBOL = "TONUSDT"
-INTERVAL = 60  # segundos
-DROP_PERCENT = 3.0
+if not TOKEN:
+    raise Exception("ERRO: variável TELEGRAM_TOKEN não configurada no Render")
 
-top_price = 0
-last_alert_top = 0
+def start(update, context):
+    update.message.reply_text("🤖 Bot de trade está online!")
 
+def price(update, context):
+    try:
+        r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=10)
+        data = r.json()
+        price = data["price"]
+        update.message.reply_text(f"💰 BTC/USDT: ${price}")
+    except Exception as e:
+        update.message.reply_text("Erro ao buscar preço.")
 
-def get_price():
-    url = "https://api.bybit.com/v5/market/tickers?category=linear&symbol=TONUSDT"
-    r = requests.get(url, timeout=10).json()
-    return float(r["result"]["list"][0]["lastPrice"])
+def main():
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
 
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("price", price))
 
-async def send(msg, app):
-    await app.bot.send_message(chat_id=CHAT_ID, text=msg)
-
-
-async def check_price(app):
-    global top_price, last_alert_top
-
-    price = get_price()
-
-    if price > top_price:
-        top_price = price
-
-    drop = (top_price - price) / top_price * 100 if top_price > 0 else 0
-
-    if drop >= DROP_PERCENT and top_price != last_alert_top:
-        await send(
-            f"⚠️ TON caiu {drop:.2f}%\nTopo: {top_price}\nPreço atual: {price}",
-            app
-        )
-        last_alert_top = top_price
-
-
-async def monitor(app):
-    await send("🤖 Bot conectado. Monitorando TONUSDT.", app)
-    while True:
-        try:
-            await check_price(app)
-        except Exception as e:
-            print("Erro:", e)
-        await asyncio.sleep(INTERVAL)
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bot ativo. Monitorando TONUSDT.")
-
-
-async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    price = get_price()
-    drop = (top_price - price) / top_price * 100 if top_price > 0 else 0
-
-    await update.message.reply_text(
-        f"TONUSDT\nPreço: {price}\nTopo: {top_price}\nQueda: {drop:.2f}%"
-    )
-
-
-async def main():
-    app = Application.builder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("check", check))
-
-    asyncio.create_task(monitor(app))
-    await app.run_polling()
-
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
