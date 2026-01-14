@@ -1,33 +1,30 @@
 import os
-import requests
-from telegram.ext import Updater, CommandHandler
+import logging
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
+logging.basicConfig(level=logging.INFO)
+
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 if not TOKEN:
-    raise Exception("ERRO: variável TELEGRAM_TOKEN não configurada no Render")
+    raise RuntimeError("TELEGRAM_TOKEN não definido")
 
-def start(update, context):
-    update.message.reply_text("🤖 Bot de trade está online!")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🤖 Bot online e funcionando!")
 
-def price(update, context):
-    try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=10)
-        data = r.json()
-        price = data["price"]
-        update.message.reply_text(f"💰 BTC/USDT: ${price}")
-    except Exception as e:
-        update.message.reply_text("Erro ao buscar preço.")
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🏓 Pong!")
 
-def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
+async def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("price", price))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ping", ping))
 
-    updater.start_polling()
-    updater.idle()
+    logging.info("Bot iniciado")
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
